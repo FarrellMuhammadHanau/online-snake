@@ -137,7 +137,7 @@ func readTCP(conn *net.TCPConn) {
 					mainChannel: make(chan MoveRequest, 1),
 					playerMoves: make(map[uint32]chan MoveRequest),
 					players:     make(map[uint32]*Player),
-					foodCount:   0,
+					foods:       make(map[Location]Location),
 				}
 				Rooms[command.RoomID] = &room
 

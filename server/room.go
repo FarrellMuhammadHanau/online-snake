@@ -11,6 +11,11 @@ type DisplayResponse struct {
 	Data string
 }
 
+type Location struct {
+	x uint8
+	y uint8
+}
+
 type Room struct {
 	ID                     uint8
 	playerNum              uint8
@@ -19,15 +24,15 @@ type Room struct {
 	playerMovesMutMainChan sync.Mutex
 	playerMoves            map[uint32]chan MoveRequest
 	players                map[uint32]*Player
-	roomMap                [][]int
+	roomMap                [][]uint8
 	mapMut                 sync.Mutex
-	foodCount              uint8
+	foods                  map[Location]Location // Set of food
 }
 
 type Player struct {
 	UserID uint32
 	Move   rune
-	Snake  [][]uint8
+	Snake  []Location
 	Point  uint32
 }
 
@@ -36,7 +41,7 @@ const (
 )
 
 func (room *Room) InitialMap() {
-	room.roomMap = [][]int{
+	room.roomMap = [][]uint8{
 		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -106,6 +111,11 @@ func (room *Room) Run(wg *sync.WaitGroup) {
 		room.playerMovesMutRun.Unlock()
 
 		// Spawn food
+		for i := uint8(0); i < room.playerNum-uint8(len(room.foods)); i++ {
+			foodLoc := room.FindLoc()
+			room.foods[foodLoc] = foodLoc
+			room.roomMap[foodLoc.y][foodLoc.x] = 2
+		}
 
 		deltaTime := time.Since(start)
 		if time.Duration(deltaTime.Milliseconds()) < maxSleep*time.Millisecond {
@@ -142,8 +152,8 @@ func (room *Room) AddPlayer(user *User) bool {
 		// Cari koordinat pertama
 		room.mapMut.Lock()
 		headLoc := room.FindLoc()
-		room.players[user.ID] = &Player{user.ID, '>', [][]uint8{headLoc}, 1}
-		room.roomMap[headLoc[1]][headLoc[0]] = 1
+		room.players[user.ID] = &Player{user.ID, '>', []Location{headLoc}, 1}
+		room.roomMap[headLoc.y][headLoc.x] = 1
 		room.mapMut.Unlock()
 
 		return true
@@ -168,7 +178,7 @@ func (room *Room) ExitRoom(user *User) {
 	room.playerMovesMutRun.Unlock()
 }
 
-func (room *Room) FindLoc() []uint8 {
+func (room *Room) FindLoc() Location {
 	var x, y uint8
 	for {
 		x = uint8(rand.Intn(30))
@@ -178,30 +188,30 @@ func (room *Room) FindLoc() []uint8 {
 		}
 
 	}
-	return []uint8{x, y}
+	return Location{x, y}
 }
 
 func (room *Room) MovePlayer(player *Player) {
-	x := player.Snake[0][0]
-	y := player.Snake[0][1]
+	x := player.Snake[0].x
+	y := player.Snake[0].y
 	switch player.Move {
 	case '>':
 		if x == 29 || room.roomMap[y][x+1] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y][x+1] == 2 {
-			newSnake := append([][]uint8{{x + 1, y}}, player.Snake...)
+			newSnake := append([]Location{{x + 1, y}}, player.Snake...)
 			player.Snake = newSnake
 			room.roomMap[y][x+1] = 1
 			player.Point++
 		} else {
-			tailX := player.Snake[player.Point-1][0]
-			tailY := player.Snake[player.Point-1][1]
+			tailX := player.Snake[player.Point-1].x
+			tailY := player.Snake[player.Point-1].y
 			room.roomMap[tailY][tailX] = 0
 			room.roomMap[y][x+1] = 1
-			player.Snake[0][0]++
+			player.Snake[0].x++
 			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i][0] = player.Snake[i-1][0]
-				player.Snake[i][1] = player.Snake[i-1][1]
+				player.Snake[i].x = player.Snake[i-1].x
+				player.Snake[i].y = player.Snake[i-1].y
 			}
 		}
 
@@ -209,19 +219,19 @@ func (room *Room) MovePlayer(player *Player) {
 		if x == 0 || room.roomMap[y][x-1] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y][x-1] == 2 {
-			newSnake := append([][]uint8{{x - 1, y}}, player.Snake...)
+			newSnake := append([]Location{{x - 1, y}}, player.Snake...)
 			player.Snake = newSnake
 			room.roomMap[y][x-1] = 1
 			player.Point++
 		} else {
-			tailX := player.Snake[player.Point-1][0]
-			tailY := player.Snake[player.Point-1][1]
+			tailX := player.Snake[player.Point-1].x
+			tailY := player.Snake[player.Point-1].y
 			room.roomMap[tailY][tailX] = 0
 			room.roomMap[y][x-1] = 1
-			player.Snake[0][0]--
+			player.Snake[0].x--
 			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i][0] = player.Snake[i-1][0]
-				player.Snake[i][1] = player.Snake[i-1][1]
+				player.Snake[i].x = player.Snake[i-1].x
+				player.Snake[i].y = player.Snake[i-1].y
 			}
 		}
 
@@ -229,19 +239,19 @@ func (room *Room) MovePlayer(player *Player) {
 		if y == 29 || room.roomMap[y+1][x] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y+1][x] == 2 {
-			newSnake := append([][]uint8{{x, y + 1}}, player.Snake...)
+			newSnake := append([]Location{{x, y + 1}}, player.Snake...)
 			player.Snake = newSnake
 			room.roomMap[y+1][x] = 1
 			player.Point++
 		} else {
-			tailX := player.Snake[player.Point-1][0]
-			tailY := player.Snake[player.Point-1][1]
+			tailX := player.Snake[player.Point-1].x
+			tailY := player.Snake[player.Point-1].y
 			room.roomMap[tailY][tailX] = 0
 			room.roomMap[y+1][x] = 1
-			player.Snake[0][1]++
+			player.Snake[0].y++
 			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i][0] = player.Snake[i-1][0]
-				player.Snake[i][1] = player.Snake[i-1][1]
+				player.Snake[i].x = player.Snake[i-1].x
+				player.Snake[i].y = player.Snake[i-1].y
 			}
 		}
 
@@ -249,19 +259,19 @@ func (room *Room) MovePlayer(player *Player) {
 		if y == 0 || room.roomMap[y-1][x] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y-1][x] == 2 {
-			newSnake := append([][]uint8{{x, y - 1}}, player.Snake...)
+			newSnake := append([]Location{{x, y - 1}}, player.Snake...)
 			player.Snake = newSnake
 			room.roomMap[y-1][x] = 1
 			player.Point++
 		} else {
-			tailX := player.Snake[player.Point-1][0]
-			tailY := player.Snake[player.Point-1][1]
+			tailX := player.Snake[player.Point-1].x
+			tailY := player.Snake[player.Point-1].y
 			room.roomMap[tailY][tailX] = 0
 			room.roomMap[y-1][x] = 1
-			player.Snake[0][1]--
+			player.Snake[0].y--
 			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i][0] = player.Snake[i-1][0]
-				player.Snake[i][1] = player.Snake[i-1][1]
+				player.Snake[i].x = player.Snake[i-1].x
+				player.Snake[i].y = player.Snake[i-1].y
 			}
 		}
 
@@ -269,7 +279,11 @@ func (room *Room) MovePlayer(player *Player) {
 }
 
 func (room *Room) Restart(player *Player) {
-
+	player.Point = 1
+	for _, snakeLoc := range player.Snake {
+		room.roomMap[snakeLoc.y][snakeLoc.x] = 0
+	}
+	player.Snake = []Location{room.FindLoc()}
 }
 
 func (room *Room) SendResponse(userID uint32, data string) {
