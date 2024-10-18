@@ -17,12 +17,12 @@ type Room struct {
 	ID                     uint8
 	playerNum              uint8
 	mainChannel            chan MoveRequest
-	playerMovesMutRun      sync.Mutex
-	playerMovesMutMainChan sync.Mutex
+	playerMovesMutRun      sync.Mutex //Mutex for playerMoves on Run
+	playerMovesMutMainChan sync.Mutex //Mutex for playerMoves on HandleMainChannel
 	playerMoves            map[uint32]chan MoveRequest
 	players                map[uint32]*Player
 	roomMap                [][]uint8
-	mapMut                 sync.Mutex
+	playersMut             sync.Mutex            // Mutex for players and playerNum
 	foods                  map[Location]Location // Set of food
 }
 
@@ -97,7 +97,7 @@ func (room *Room) Run(wg *sync.WaitGroup) {
 		// Move all player
 		room.playerMovesMutRun.Lock()
 		for userId, moveCn := range room.playerMoves {
-			room.mapMut.Lock()
+			room.playersMut.Lock()
 			player := room.players[userId]
 			if len(moveCn) != 0 {
 				move := <-moveCn
@@ -105,30 +105,31 @@ func (room *Room) Run(wg *sync.WaitGroup) {
 				player.Move = move.Move
 			}
 			room.MovePlayer(player)
-			room.mapMut.Unlock()
+			room.playersMut.Unlock()
 		}
 		room.playerMovesMutRun.Unlock()
 
 		// Spawn food
-		room.mapMut.Lock()
+		room.playersMut.Lock()
 		for i := 0; i < int(room.playerNum)-len(room.foods); i++ {
 			foodLoc := room.FindLoc()
 			room.foods[foodLoc] = foodLoc
 			room.roomMap[foodLoc.Y][foodLoc.X] = 2
 			// fmt.Printf("X: %d Y: %d\n", foodLoc.X, foodLoc.Y)
 		}
-		room.mapMut.Unlock()
+		room.playersMut.Unlock()
 
-		room.playerMovesMutRun.Lock()
+		// Send data to client
+		room.playersMut.Lock()
 		var wgResponse sync.WaitGroup
 		for _, player := range room.players {
 			wgResponse.Add(1)
 			go room.SendResponse(player, &wgResponse)
 		}
 		wgResponse.Wait()
-		room.playerMovesMutRun.Unlock()
+		room.playersMut.Unlock()
 
-		// Send data to client
+		// Tickrate
 		deltaTime := time.Since(start)
 		if time.Duration(deltaTime.Milliseconds()) < maxSleep*time.Millisecond {
 			time.Sleep(maxSleep*time.Millisecond - time.Duration(deltaTime.Milliseconds()))
@@ -163,11 +164,11 @@ func (room *Room) AddPlayer(user *User) bool {
 		room.playerMoves[user.ID] = make(chan MoveRequest, 1)
 
 		// Cari koordinat pertama
-		room.mapMut.Lock()
+		room.playersMut.Lock()
 		headLoc := room.FindLoc()
 		room.players[user.ID] = &Player{user.ID, '>', []Location{headLoc}, 1}
 		room.roomMap[headLoc.Y][headLoc.X] = 1
-		room.mapMut.Unlock()
+		room.playersMut.Unlock()
 
 		return true
 	}

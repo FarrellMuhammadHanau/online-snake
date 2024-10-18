@@ -43,14 +43,12 @@ type CommandRequest struct {
 	UserID   uint32
 	JoinRoom bool
 	RoomID   uint8
-	Restart  bool
 	ExitRoom bool
 	Quit     bool
 }
 
 type CommandResponse struct {
 	IsSuccess bool
-	Restart   bool
 	ExitRoom  bool
 	JoinRoom  bool
 	Quit      bool
@@ -110,7 +108,7 @@ func main() {
 		<-sigChannel
 		udpSocket.Close()
 		for {
-			commandRequest := CommandRequest{userID, false, 0, false, false, true}
+			commandRequest := CommandRequest{userID, false, 0, false, true}
 			encodedCommandRequest := encodeCommandRequest(commandRequest)
 			tcpSocket.Write(encodedCommandRequest)
 
@@ -146,7 +144,7 @@ func main() {
 			fmt.Scanln(&roomNumStr)
 			roomNum, _ := strconv.Atoi(roomNumStr)
 			if roomNum > 0 && roomNum < 256 {
-				commandRequest := CommandRequest{userID, true, uint8(roomNum), false, false, false}
+				commandRequest := CommandRequest{userID, true, uint8(roomNum), false, false}
 				encodedCommandRequest := encodeCommandRequest(commandRequest)
 				tcpSocket.Write(encodedCommandRequest)
 
@@ -257,7 +255,7 @@ func readKeyboard(tcpSocket *net.TCPConn, udpSocket *net.UDPConn) {
 		if key == keyboard.KeyEsc {
 			isPlayingMutex.Lock()
 
-			encodedCommand := encodeCommandRequest(CommandRequest{userID, false, 0, false, true, false})
+			encodedCommand := encodeCommandRequest(CommandRequest{userID, false, 0, true, false})
 			tcpSocket.Write(encodedCommand)
 
 			receiveBuffer := make([]byte, BUFFER_SIZE)
@@ -270,8 +268,6 @@ func readKeyboard(tcpSocket *net.TCPConn, udpSocket *net.UDPConn) {
 
 			isPlayingMutex.Unlock()
 			break
-		} else if char == 'r' {
-
 		} else if char == 'w' {
 			moveRequest := MoveRequest{userID, '^'}
 			encodedMoveRequest := encodeMoveRequest(moveRequest)

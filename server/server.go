@@ -22,14 +22,12 @@ type CommandRequest struct {
 	UserID   uint32
 	JoinRoom bool
 	RoomID   uint8
-	Restart  bool
 	ExitRoom bool
 	Quit     bool
 }
 
 type CommandResponse struct {
 	IsSuccess bool
-	Restart   bool
 	ExitRoom  bool
 	JoinRoom  bool
 	Quit      bool
@@ -124,7 +122,7 @@ func readTCP(conn *net.TCPConn) {
 		receiveBuffer := make([]byte, BUFFER_SIZE)
 		receiveLength, _ := conn.Read(receiveBuffer)
 		command := decodeCommandRequest(receiveBuffer[:receiveLength])
-		response := CommandResponse{false, false, false, false, false}
+		response := CommandResponse{false, false, false, false}
 		if command.JoinRoom {
 			room, roomExist := Rooms[command.RoomID]
 			if roomExist {
@@ -151,8 +149,6 @@ func readTCP(conn *net.TCPConn) {
 			room.ExitRoom(&user)
 			response.IsSuccess = true
 			response.ExitRoom = true
-		} else if command.Restart {
-
 		} else if command.Quit {
 			if user.RoomID != 0 {
 				room := Rooms[user.RoomID]
