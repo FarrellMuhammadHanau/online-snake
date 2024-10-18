@@ -140,6 +140,7 @@ func readTCP(conn *net.TCPConn) {
 					foods:       make(map[Location]Location),
 				}
 				Rooms[command.RoomID] = &room
+				room.InitialMap()
 
 				response.IsSuccess = room.AddPlayer(&user)
 				response.JoinRoom = true

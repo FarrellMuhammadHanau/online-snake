@@ -1,19 +1,16 @@
 package main
 
 import (
-	"bytes"
+	"encoding/json"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
 )
 
 type DisplayResponse struct {
-	Data string
-}
-
-type Location struct {
-	x uint8
-	y uint8
+	Players []Player
+	Foods   []Location
 }
 
 type Room struct {
@@ -29,6 +26,11 @@ type Room struct {
 	foods                  map[Location]Location // Set of food
 }
 
+type Location struct {
+	X uint8
+	Y uint8
+}
+
 type Player struct {
 	UserID uint32
 	Move   rune
@@ -36,9 +38,7 @@ type Player struct {
 	Point  uint32
 }
 
-const (
-	maxSleep = 750
-)
+const maxSleep = 1000
 
 func (room *Room) InitialMap() {
 	room.roomMap = [][]uint8{
@@ -76,7 +76,6 @@ func (room *Room) InitialMap() {
 }
 
 func (room *Room) Start() {
-	room.InitialMap()
 	defer delete(Rooms, room.ID)
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -99,28 +98,42 @@ func (room *Room) Run(wg *sync.WaitGroup) {
 		room.playerMovesMutRun.Lock()
 		for userId, moveCn := range room.playerMoves {
 			room.mapMut.Lock()
+			player := room.players[userId]
 			if len(moveCn) != 0 {
 				move := <-moveCn
-				player := room.players[userId]
 
 				player.Move = move.Move
-				room.MovePlayer(player)
 			}
+			room.MovePlayer(player)
 			room.mapMut.Unlock()
 		}
 		room.playerMovesMutRun.Unlock()
 
 		// Spawn food
-		for i := uint8(0); i < room.playerNum-uint8(len(room.foods)); i++ {
+		room.mapMut.Lock()
+		for i := 0; i < int(room.playerNum)-len(room.foods); i++ {
 			foodLoc := room.FindLoc()
 			room.foods[foodLoc] = foodLoc
-			room.roomMap[foodLoc.y][foodLoc.x] = 2
+			room.roomMap[foodLoc.Y][foodLoc.X] = 2
+			// fmt.Printf("X: %d Y: %d\n", foodLoc.X, foodLoc.Y)
 		}
+		room.mapMut.Unlock()
 
+		room.playerMovesMutRun.Lock()
+		var wgResponse sync.WaitGroup
+		for _, player := range room.players {
+			wgResponse.Add(1)
+			go room.SendResponse(player, &wgResponse)
+		}
+		wgResponse.Wait()
+		room.playerMovesMutRun.Unlock()
+
+		// Send data to client
 		deltaTime := time.Since(start)
 		if time.Duration(deltaTime.Milliseconds()) < maxSleep*time.Millisecond {
 			time.Sleep(maxSleep*time.Millisecond - time.Duration(deltaTime.Milliseconds()))
 		}
+
 	}
 }
 
@@ -153,7 +166,7 @@ func (room *Room) AddPlayer(user *User) bool {
 		room.mapMut.Lock()
 		headLoc := room.FindLoc()
 		room.players[user.ID] = &Player{user.ID, '>', []Location{headLoc}, 1}
-		room.roomMap[headLoc.y][headLoc.x] = 1
+		room.roomMap[headLoc.Y][headLoc.X] = 1
 		room.mapMut.Unlock()
 
 		return true
@@ -168,6 +181,7 @@ func (room *Room) ExitRoom(user *User) {
 	room.playerMovesMutMainChan.Lock()
 
 	delete(room.playerMoves, user.ID)
+	delete(room.players, user.ID)
 	// Make sure HandleMainChannel for loop break
 	room.mainChannel <- MoveRequest{user.ID, 'e'}
 
@@ -192,10 +206,11 @@ func (room *Room) FindLoc() Location {
 }
 
 func (room *Room) MovePlayer(player *Player) {
-	x := player.Snake[0].x
-	y := player.Snake[0].y
+	x := player.Snake[0].X
+	y := player.Snake[0].Y
 	switch player.Move {
 	case '>':
+		// fmt.Println(room.roomMap[y][x+1])
 		if x == 29 || room.roomMap[y][x+1] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y][x+1] == 2 {
@@ -203,16 +218,17 @@ func (room *Room) MovePlayer(player *Player) {
 			player.Snake = newSnake
 			room.roomMap[y][x+1] = 1
 			player.Point++
+			delete(room.foods, Location{x + 1, y})
 		} else {
-			tailX := player.Snake[player.Point-1].x
-			tailY := player.Snake[player.Point-1].y
+			tailX := player.Snake[player.Point-1].X
+			tailY := player.Snake[player.Point-1].Y
 			room.roomMap[tailY][tailX] = 0
-			room.roomMap[y][x+1] = 1
-			player.Snake[0].x++
-			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i].x = player.Snake[i-1].x
-				player.Snake[i].y = player.Snake[i-1].y
+			for i := (len(player.Snake) - 1); i > 0; i-- {
+				player.Snake[i].X = player.Snake[i-1].X
+				player.Snake[i].Y = player.Snake[i-1].Y
 			}
+			room.roomMap[y][x+1] = 1
+			player.Snake[0].X++
 		}
 
 	case '<':
@@ -223,19 +239,20 @@ func (room *Room) MovePlayer(player *Player) {
 			player.Snake = newSnake
 			room.roomMap[y][x-1] = 1
 			player.Point++
+			delete(room.foods, Location{x - 1, y})
 		} else {
-			tailX := player.Snake[player.Point-1].x
-			tailY := player.Snake[player.Point-1].y
+			tailX := player.Snake[player.Point-1].X
+			tailY := player.Snake[player.Point-1].Y
 			room.roomMap[tailY][tailX] = 0
-			room.roomMap[y][x-1] = 1
-			player.Snake[0].x--
-			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i].x = player.Snake[i-1].x
-				player.Snake[i].y = player.Snake[i-1].y
+			for i := (len(player.Snake) - 1); i > 0; i-- {
+				player.Snake[i].X = player.Snake[i-1].X
+				player.Snake[i].Y = player.Snake[i-1].Y
 			}
+			room.roomMap[y][x-1] = 1
+			player.Snake[0].X--
 		}
 
-	case '^':
+	case 'v':
 		if y == 29 || room.roomMap[y+1][x] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y+1][x] == 2 {
@@ -243,19 +260,20 @@ func (room *Room) MovePlayer(player *Player) {
 			player.Snake = newSnake
 			room.roomMap[y+1][x] = 1
 			player.Point++
+			delete(room.foods, Location{x, y + 1})
 		} else {
-			tailX := player.Snake[player.Point-1].x
-			tailY := player.Snake[player.Point-1].y
+			tailX := player.Snake[player.Point-1].X
+			tailY := player.Snake[player.Point-1].Y
 			room.roomMap[tailY][tailX] = 0
-			room.roomMap[y+1][x] = 1
-			player.Snake[0].y++
-			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i].x = player.Snake[i-1].x
-				player.Snake[i].y = player.Snake[i-1].y
+			for i := (len(player.Snake) - 1); i > 0; i-- {
+				player.Snake[i].X = player.Snake[i-1].X
+				player.Snake[i].Y = player.Snake[i-1].Y
 			}
+			room.roomMap[y+1][x] = 1
+			player.Snake[0].Y++
 		}
 
-	case 'v':
+	case '^':
 		if y == 0 || room.roomMap[y-1][x] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y-1][x] == 2 {
@@ -263,16 +281,17 @@ func (room *Room) MovePlayer(player *Player) {
 			player.Snake = newSnake
 			room.roomMap[y-1][x] = 1
 			player.Point++
+			delete(room.foods, Location{x, y - 1})
 		} else {
-			tailX := player.Snake[player.Point-1].x
-			tailY := player.Snake[player.Point-1].y
+			tailX := player.Snake[player.Point-1].X
+			tailY := player.Snake[player.Point-1].Y
 			room.roomMap[tailY][tailX] = 0
-			room.roomMap[y-1][x] = 1
-			player.Snake[0].y--
-			for i := (len(player.Snake) - 2); i >= 0; i++ {
-				player.Snake[i].x = player.Snake[i-1].x
-				player.Snake[i].y = player.Snake[i-1].y
+			for i := (len(player.Snake) - 1); i > 0; i-- {
+				player.Snake[i].X = player.Snake[i-1].X
+				player.Snake[i].Y = player.Snake[i-1].Y
 			}
+			room.roomMap[y-1][x] = 1
+			player.Snake[0].Y--
 		}
 
 	}
@@ -281,18 +300,31 @@ func (room *Room) MovePlayer(player *Player) {
 func (room *Room) Restart(player *Player) {
 	player.Point = 1
 	for _, snakeLoc := range player.Snake {
-		room.roomMap[snakeLoc.y][snakeLoc.x] = 0
+		room.roomMap[snakeLoc.Y][snakeLoc.X] = 0
 	}
 	player.Snake = []Location{room.FindLoc()}
 }
 
-func (room *Room) SendResponse(userID uint32, data string) {
-	response := room.EncodeDisplayResponse(DisplayResponse{data})
-	socketUDP.WriteToUDP(response, Users[userID].UdpAddress)
+func (room *Room) SendResponse(player *Player, wg *sync.WaitGroup) {
+	defer wg.Done()
+	foods := []Location{}
+	for foodLoc := range room.foods {
+		foods = append(foods, foodLoc)
+	}
+	players := []Player{}
+	for _, player := range room.players {
+		players = append(players, *player)
+	}
+
+	response := room.EncodeDisplayResponse(DisplayResponse{players, foods})
+	// fmt.Println(len(room.foods))
+	socketUDP.WriteToUDP(response, Users[player.UserID].UdpAddress)
 }
 
 func (room *Room) EncodeDisplayResponse(response DisplayResponse) []byte {
-	bytesBuffer := new(bytes.Buffer)
-	bytesBuffer.WriteString(response.Data)
-	return bytesBuffer.Bytes()
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	return jsonResponse
 }
