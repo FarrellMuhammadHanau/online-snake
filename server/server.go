@@ -2,7 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	crand "crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/binary"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -47,10 +54,12 @@ type User struct {
 var Users map[uint32]*User
 var Rooms map[uint8]*Room
 var socketUDP *net.UDPConn
+var symmetricKeys map[string][]byte
 
 func main() {
 	Users = make(map[uint32]*User)
 	Rooms = make(map[uint8]*Room)
+	symmetricKeys = make(map[string][]byte)
 
 	// Create UDP Listener
 	udpListenAddress, err := net.ResolveUDPAddr(UDP, net.JoinHostPort(SERVER_IP, UDP_PORT))
@@ -85,10 +94,13 @@ func main() {
 func readUDP(conn *net.UDPConn) {
 	for {
 		receiveBuffer := make([]byte, BUFFER_SIZE)
-		receiveLength, _, _ := conn.ReadFromUDP(receiveBuffer)
-		move := decodeMove(receiveBuffer[:receiveLength])
-		room := Rooms[Users[move.UserID].RoomID]
-		room.mainChannel <- move
+		receiveLength, udpAddr, _ := conn.ReadFromUDP(receiveBuffer)
+		go func(recBuffer []byte, addr *net.UDPAddr) {
+			key := symmetricKeys[udpAddr.String()]
+			move := decodeMove(recBuffer, key)
+			room := Rooms[Users[move.UserID].RoomID]
+			room.mainChannel <- move
+		}(receiveBuffer[:receiveLength], udpAddr)
 	}
 }
 
@@ -96,6 +108,27 @@ func readTCP(conn *net.TCPConn) {
 	defer conn.Close()
 
 	user := User{}
+
+	// Give public key to client
+	privateKey, err := rsa.GenerateKey(crand.Reader, 2048)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	publicKey := &privateKey.PublicKey
+	publicKeyByte, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	conn.Write(publicKeyByte)
+
+	// Get symmetric key from client
+	sKeyBuffer := make([]byte, BUFFER_SIZE)
+	sKeyBuffLength, _ := conn.Read(sKeyBuffer)
+	symmetricKey := sKeyBuffer[:sKeyBuffLength]
+	symmetricKey, err = rsa.DecryptOAEP(sha256.New(), crand.Reader, privateKey, symmetricKey, nil)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	for {
 		user.ID = rand.Uint32()
@@ -111,17 +144,19 @@ func readTCP(conn *net.TCPConn) {
 	// Send ID
 	bytesID := make([]byte, 4)
 	binary.BigEndian.PutUint32(bytesID, user.ID)
-	conn.Write(bytesID)
+	conn.Write(encryptMessage(bytesID, symmetricKey))
 
 	// Get UDP Address
 	udpAddrBuffer := make([]byte, BUFFER_SIZE)
 	length, _ := conn.Read(udpAddrBuffer)
-	user.UdpAddress, _ = net.ResolveUDPAddr(UDP, string(udpAddrBuffer[:length]))
+	user.UdpAddress, _ = net.ResolveUDPAddr(UDP, string(decryptMessage(udpAddrBuffer[:length], symmetricKey)))
+
+	symmetricKeys[user.UdpAddress.String()] = symmetricKey
 
 	for {
 		receiveBuffer := make([]byte, BUFFER_SIZE)
 		receiveLength, _ := conn.Read(receiveBuffer)
-		command := decodeCommandRequest(receiveBuffer[:receiveLength])
+		command := decodeCommandRequest(receiveBuffer[:receiveLength], symmetricKey)
 		response := CommandResponse{false, false, false, false}
 		if command.JoinRoom {
 			room, roomExist := Rooms[command.RoomID]
@@ -157,33 +192,72 @@ func readTCP(conn *net.TCPConn) {
 
 			response.IsSuccess = true
 			response.Quit = true
-			conn.Write(encodeCommandResponse(response))
+			conn.Write(encodeCommandResponse(response, symmetricKey))
 
 			break
 		} else {
 
 		}
 
-		conn.Write(encodeCommandResponse(response))
+		conn.Write(encodeCommandResponse(response, symmetricKey))
 	}
 }
 
-func decodeCommandRequest(bytesCommand []byte) CommandRequest {
+func decodeCommandRequest(bytesCommand []byte, key []byte) CommandRequest {
 	var command CommandRequest
-	bytesReader := bytes.NewReader(bytesCommand)
+	bytesReader := bytes.NewReader(decryptMessage(bytesCommand, key))
 	binary.Read(bytesReader, binary.BigEndian, &command)
 	return command
 }
 
-func decodeMove(bytesMoves []byte) MoveRequest {
+func decodeMove(bytesMoves []byte, key []byte) MoveRequest {
 	var move MoveRequest
-	bytesReader := bytes.NewReader(bytesMoves)
+	bytesReader := bytes.NewReader(decryptMessage(bytesMoves, key))
 	binary.Read(bytesReader, binary.BigEndian, &move)
 	return move
 }
 
-func encodeCommandResponse(response CommandResponse) []byte {
+func encodeCommandResponse(response CommandResponse, key []byte) []byte {
 	buffer := new(bytes.Buffer)
 	binary.Write(buffer, binary.BigEndian, response)
-	return buffer.Bytes()
+	return encryptMessage(buffer.Bytes(), key)
+}
+
+func encryptMessage(message []byte, key []byte) []byte {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	nonce := make([]byte, 12)
+	if _, err := io.ReadFull(crand.Reader, nonce); err != nil {
+		log.Fatalln(err)
+	}
+	encrypted := gcm.Seal(nonce, nonce, message, nil)
+	return encrypted
+}
+
+func decryptMessage(message []byte, key []byte) []byte {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	nonce, message := message[:nonceSize], message[nonceSize:]
+	decryptedMessage, err := gcm.Open(nil, nonce, message, nil)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	return decryptedMessage
 }
