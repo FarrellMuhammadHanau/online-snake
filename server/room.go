@@ -32,13 +32,15 @@ type Location struct {
 }
 
 type Player struct {
-	UserID uint32
-	Move   rune
-	Snake  []Location
-	Point  uint32
+	UserID     uint32
+	Move       rune
+	Snake      []Location
+	Point      uint32
+	Username   string
+	SnakeShape rune
 }
 
-const maxSleep = 1000
+const maxSleep = 750
 
 func (room *Room) InitialMap() {
 	room.roomMap = [][]uint8{
@@ -101,10 +103,10 @@ func (room *Room) Run(wg *sync.WaitGroup) {
 			player := room.players[userId]
 			if len(moveCn) != 0 {
 				move := <-moveCn
-
-				player.Move = move.Move
+				room.MovePlayer(player, move.Move)
+			} else {
+				room.MovePlayer(player, player.Move)
 			}
-			room.MovePlayer(player)
 			room.playersMut.Unlock()
 		}
 		room.playerMovesMutRun.Unlock()
@@ -157,7 +159,7 @@ func (room *Room) HandleMainChannel(wg *sync.WaitGroup) {
 	}
 }
 
-func (room *Room) AddPlayer(user *User) bool {
+func (room *Room) AddPlayer(user *User, username string, snakeShape rune) bool {
 	if room.playerNum <= 4 {
 		room.playerNum++
 		user.RoomID = room.ID
@@ -166,7 +168,7 @@ func (room *Room) AddPlayer(user *User) bool {
 		// Cari koordinat pertama
 		room.playersMut.Lock()
 		headLoc := room.FindLoc()
-		room.players[user.ID] = &Player{user.ID, '>', []Location{headLoc}, 1}
+		room.players[user.ID] = &Player{user.ID, '>', []Location{headLoc}, 1, username, snakeShape}
 		room.roomMap[headLoc.Y][headLoc.X] = 1
 		room.playersMut.Unlock()
 
@@ -206,12 +208,31 @@ func (room *Room) FindLoc() Location {
 	return Location{x, y}
 }
 
-func (room *Room) MovePlayer(player *Player) {
+func (room *Room) MovePlayer(player *Player, move rune) {
 	x := player.Snake[0].X
 	y := player.Snake[0].Y
+
+	switch move {
+	case '>':
+		if player.Move != '<' {
+			player.Move = move
+		}
+	case '<':
+		if player.Move != '>' {
+			player.Move = move
+		}
+	case '^':
+		if player.Move != 'v' {
+			player.Move = move
+		}
+	case 'v':
+		if player.Move != '^' {
+			player.Move = move
+		}
+	}
+
 	switch player.Move {
 	case '>':
-		// fmt.Println(room.roomMap[y][x+1])
 		if x == 29 || room.roomMap[y][x+1] == 1 {
 			room.Restart(player)
 		} else if room.roomMap[y][x+1] == 2 {

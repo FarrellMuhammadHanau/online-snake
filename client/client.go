@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"syscall"
@@ -40,18 +41,22 @@ type Location struct {
 }
 
 type Player struct {
-	UserID uint32
-	Move   rune
-	Snake  []Location
-	Point  uint32
+	UserID     uint32
+	Move       rune
+	Snake      []Location
+	Point      uint32
+	Username   string
+	SnakeShape rune
 }
 
 type CommandRequest struct {
-	UserID   uint32
-	JoinRoom bool
-	RoomID   uint8
-	ExitRoom bool
-	Quit     bool
+	UserID     uint32
+	JoinRoom   bool
+	RoomID     uint8
+	ExitRoom   bool
+	Quit       bool
+	Username   [5]rune
+	SnakeShape rune
 }
 
 type CommandResponse struct {
@@ -76,6 +81,7 @@ var (
 	isPlaying      bool
 	isPlayingMutex sync.Mutex
 	symmetricKey   []byte
+	userName       string
 )
 
 func main() {
@@ -130,39 +136,27 @@ func main() {
 	udpAddrBuffer.WriteString(udpSocket.LocalAddr().String())
 	tcpSocket.Write(encryptMessage(udpAddrBuffer.Bytes()))
 
+	defer closeConn(tcpSocket, udpSocket)
+
 	// Handle SIGINT and SIGTERM
 	sigChannel := make(chan os.Signal, 1)
 	signal.Notify(sigChannel, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigChannel
-		udpSocket.Close()
-		for {
-			commandRequest := CommandRequest{userID, false, 0, false, true}
-			encodedCommandRequest := encodeCommandRequest(commandRequest)
-			tcpSocket.Write(encodedCommandRequest)
-
-			receiveBuffer := make([]byte, BUFFER_SIZE)
-			receiveLength, _ := tcpSocket.Read(receiveBuffer)
-			commandResponse := decodeCommandResponse(receiveBuffer[:receiveLength])
-
-			if commandResponse.IsSuccess && commandResponse.Quit {
-				break
-			}
-		}
-		tcpSocket.Close()
-
+		closeConn(tcpSocket, udpSocket)
 		os.Exit(0)
 	}()
 
+	clearScreen()
 	for {
-		clearScreen()
 		if isPlaying {
 			go readKeyboard(tcpSocket, udpSocket)
 			for {
 				isPlayingMutex.Lock()
 				if !isPlaying {
 					isPlayingMutex.Unlock()
+					clearScreen()
 					break
 				}
 				draw(udpSocket)
@@ -170,11 +164,35 @@ func main() {
 			}
 		} else {
 			var roomNumStr string
-			fmt.Print("Enter room number: ")
+			fmt.Print("Enter room number (1-255): ")
 			fmt.Scanln(&roomNumStr)
 			roomNum, _ := strconv.Atoi(roomNumStr)
+
 			if roomNum > 0 && roomNum < 256 {
-				commandRequest := CommandRequest{userID, true, uint8(roomNum), false, false}
+				fmt.Print("Enter username (5 char max): ")
+				fmt.Scanln(&userName)
+				if len(userName) == 0 {
+					clearScreen()
+					fmt.Println("username must not be blank")
+					continue
+				} else if len(userName) > 5 {
+					userName = userName[:5]
+				}
+
+				var shapeString string
+				fmt.Print("Enter snake shape: ")
+				fmt.Scanln(&shapeString)
+				if len(shapeString) == 0 {
+					clearScreen()
+					fmt.Println("snake shape must not be blank")
+					continue
+				}
+
+				runeUsername := make([]rune, 5)
+				tempRuneUsername := []rune(userName)
+				copy(runeUsername, tempRuneUsername)
+				fmt.Println(tempRuneUsername)
+				commandRequest := CommandRequest{userID, true, uint8(roomNum), false, false, [5]rune(runeUsername), rune(shapeString[0])}
 				encodedCommandRequest := encodeCommandRequest(commandRequest)
 				tcpSocket.Write(encodedCommandRequest)
 
@@ -184,14 +202,34 @@ func main() {
 				if response.JoinRoom && response.IsSuccess {
 					isPlaying = true
 				} else {
+					clearScreen()
 					fmt.Println("Room is full")
 				}
 
 			} else {
+				clearScreen()
 				fmt.Println("Enter in range of 1-255")
 			}
 		}
 	}
+}
+
+func closeConn(tcpSocket *net.TCPConn, udpSocket *net.UDPConn) {
+	udpSocket.Close()
+	for {
+		commandRequest := CommandRequest{userID, false, 0, false, true, [5]rune(make([]rune, 5)), 0}
+		encodedCommandRequest := encodeCommandRequest(commandRequest)
+		tcpSocket.Write(encodedCommandRequest)
+
+		receiveBuffer := make([]byte, BUFFER_SIZE)
+		receiveLength, _ := tcpSocket.Read(receiveBuffer)
+		commandResponse := decodeCommandResponse(receiveBuffer[:receiveLength])
+
+		if commandResponse.IsSuccess && commandResponse.Quit {
+			break
+		}
+	}
+	tcpSocket.Close()
 }
 
 func clearScreen() {
@@ -249,15 +287,15 @@ func draw(udpSocket *net.UDPConn) {
 	for _, player := range response.Players {
 		head := player.Snake[0]
 		roomMap[head.Y+1][(head.X+1)*2] = player.Move
-
+		userName := []rune(player.Username)
 		// Add player to map
 		for i := 1; i < len(player.Snake); i++ {
 			loc := player.Snake[i]
-			if player.UserID == userID {
-				roomMap[loc.Y+1][(loc.X+1)*2] = '@'
-			} else {
-				roomMap[loc.Y+1][(loc.X+1)*2] = '#'
+			if i-2 < len(userName) && i > 1 {
+				roomMap[loc.Y+1][(loc.X+1)*2] = userName[i-2]
+				continue
 			}
+			roomMap[loc.Y+1][(loc.X+1)*2] = player.SnakeShape
 		}
 	}
 
@@ -265,8 +303,26 @@ func draw(udpSocket *net.UDPConn) {
 		roomMap[food.Y+1][(food.X+1)*2] = '$'
 	}
 
-	for _, lines := range roomMap {
-		fmt.Println(string(lines))
+	fmt.Println(string(roomMap[0]))
+	thirdLine := string(roomMap[1]) + "\tLeaderboard"
+	fmt.Println(thirdLine)
+
+	sort.SliceStable(response.Players, func(i int, j int) bool {
+		if response.Players[i].Point != response.Players[j].Point {
+			return response.Players[i].Point > response.Players[j].Point
+		}
+
+		return response.Players[i].Username < response.Players[j].Username
+	})
+
+	for i := 2; i < len(response.Players)+2; i++ {
+		player := response.Players[i-2]
+		lines := fmt.Sprintf("%s\t%s - %d - '%c'", string(roomMap[i]), string(player.Username), player.Point, player.SnakeShape)
+		fmt.Println(lines)
+	}
+
+	for i := len(response.Players) + 2; i < len(roomMap); i++ {
+		fmt.Println(string(roomMap[i]))
 	}
 }
 
@@ -285,7 +341,7 @@ func readKeyboard(tcpSocket *net.TCPConn, udpSocket *net.UDPConn) {
 		if key == keyboard.KeyEsc {
 			isPlayingMutex.Lock()
 
-			encodedCommand := encodeCommandRequest(CommandRequest{userID, false, 0, true, false})
+			encodedCommand := encodeCommandRequest(CommandRequest{userID, false, 0, true, false, [5]rune(make([]rune, 5)), 0})
 			tcpSocket.Write(encodedCommand)
 
 			receiveBuffer := make([]byte, BUFFER_SIZE)

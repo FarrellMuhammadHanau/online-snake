@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"strings"
 )
 
 const (
@@ -26,11 +27,13 @@ const (
 )
 
 type CommandRequest struct {
-	UserID   uint32
-	JoinRoom bool
-	RoomID   uint8
-	ExitRoom bool
-	Quit     bool
+	UserID     uint32
+	JoinRoom   bool
+	RoomID     uint8
+	ExitRoom   bool
+	Quit       bool
+	Username   [5]rune
+	SnakeShape rune
 }
 
 type CommandResponse struct {
@@ -161,7 +164,7 @@ func readTCP(conn *net.TCPConn) {
 		if command.JoinRoom {
 			room, roomExist := Rooms[command.RoomID]
 			if roomExist {
-				response.IsSuccess = room.AddPlayer(&user)
+				response.IsSuccess = room.AddPlayer(&user, strings.ReplaceAll(string(command.Username[:]), "\x00", ""), command.SnakeShape)
 				response.JoinRoom = true
 			} else {
 				room := Room{
@@ -175,7 +178,7 @@ func readTCP(conn *net.TCPConn) {
 				Rooms[command.RoomID] = &room
 				room.InitialMap()
 
-				response.IsSuccess = room.AddPlayer(&user)
+				response.IsSuccess = room.AddPlayer(&user, strings.ReplaceAll(string(command.Username[:]), "\x00", ""), command.SnakeShape)
 				response.JoinRoom = true
 				go room.Start()
 			}
@@ -195,8 +198,6 @@ func readTCP(conn *net.TCPConn) {
 			conn.Write(encodeCommandResponse(response, symmetricKey))
 
 			break
-		} else {
-
 		}
 
 		conn.Write(encodeCommandResponse(response, symmetricKey))
