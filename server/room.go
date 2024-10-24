@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -41,6 +39,7 @@ type Player struct {
 }
 
 const maxSleep = 750
+const minFood = 2
 
 func (room *Room) InitialMap() {
 	room.roomMap = [][]uint8{
@@ -113,7 +112,7 @@ func (room *Room) Run(wg *sync.WaitGroup) {
 
 		// Spawn food
 		room.playersMut.Lock()
-		for i := 0; i < int(room.playerNum)-len(room.foods); i++ {
+		for i := 0; i < int(room.playerNum)-len(room.foods)+minFood; i++ {
 			foodLoc := room.FindLoc()
 			room.foods[foodLoc] = foodLoc
 			room.roomMap[foodLoc.Y][foodLoc.X] = 2
@@ -338,15 +337,7 @@ func (room *Room) SendResponse(player *Player, wg *sync.WaitGroup) {
 		players = append(players, *player)
 	}
 
-	response := room.EncodeDisplayResponse(DisplayResponse{players, foods})
+	response := encodeDisplayResponse(DisplayResponse{players, foods})
 	// fmt.Println(len(room.foods))
 	socketUDP.WriteToUDP(response, Users[player.UserID].UdpAddress)
-}
-
-func (room *Room) EncodeDisplayResponse(response DisplayResponse) []byte {
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	return jsonResponse
 }
