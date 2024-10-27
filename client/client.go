@@ -127,7 +127,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-
+	
 	// Send udp address
 	udpAddrBuffer := new(bytes.Buffer)
 	udpAddrBuffer.WriteString(udpSocket.LocalAddr().String())
@@ -140,6 +140,7 @@ func main() {
 	signal.Notify(sigChannel, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
+		fmt.Println("Test")
 		<-sigChannel
 		closeConn(tcpSocket, udpSocket)
 		os.Exit(0)
@@ -367,6 +368,10 @@ func readKeyboard(tcpSocket *net.TCPConn, udpSocket *net.UDPConn) {
 			moveRequest := MoveRequest{userID, '<'}
 			encodedMoveRequest := encodeMoveRequest(moveRequest)
 			udpSocket.Write(encodedMoveRequest)
+		} else if key == keyboard.KeyCtrlC {	
+			syscall.Kill(os.Getpid(), syscall.SIGINT)
+			break
 		}
 	}
 }
+
