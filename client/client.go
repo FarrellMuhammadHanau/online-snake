@@ -374,4 +374,3 @@ func readKeyboard(tcpSocket *net.TCPConn, udpSocket *net.UDPConn) {
 		}
 	}
 }
-
